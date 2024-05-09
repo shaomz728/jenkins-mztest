@@ -1,0 +1,76 @@
+pipeline{
+	agent any
+	environment{
+		harbor_user = 'admin'
+        harbor_passwd = 'Harbor12345'
+        harbor_addr = '192.168.50.55'
+        harbor_repo = 'jenkins-demo'
+	}
+	stages {
+        stage('拉取Git代码') {
+            steps {
+                checkout scmGit(branches: [[name: '${tag}']], extensions: [], userRemoteConfigs: [[url: 'http://192.168.50.55:8929/root/mztest.git']])
+		}
+            }
+	    stage('通过maven 构建代码') {
+            steps {
+                sh '/var/jenkins_home/maven-3.6.3/bin/mvn clean package -DskipTest'
+		}
+            }
+	    stage('通过 SonarQube检测代码质量') {
+            steps {
+                sh '/var/jenkins_home/sonar-scanner/bin/sonar-scanner -Dsonar.sources=./ -Dsonar.projectname=${JOB_NAME} -Dsonar.projectKey=${JOB_NAME} -Dsonar.java.binaries=target/ -Dsonar.login=b3c05e6547eb924f02d86298a13a58dc1a516f4a'
+                }
+            }
+	    stage('通过Docker 制作自定义镜像') {
+            steps {
+                sh '''mv ./target/*.jar ./docker/
+docker build -t ${JOB_NAME}:${tag} ./docker/'''
+                }
+          }		
+	    stage('自定义镜像推送Harbor') {
+            steps {
+                sh '''docker login -u ${harbor_user} -p ${harbor_passwd} ${harbor_addr}
+docker tag ${JOB_NAME}:${tag}  ${harbor_addr}/${harbor_repo}/${JOB_NAME}:${tag}
+docker push ${harbor_addr}/${harbor_repo}/${JOB_NAME}:${tag}
+docker rmi ${JOB_NAME}:${tag}
+docker rmi ${harbor_addr}/${harbor_repo}/${JOB_NAME}:${tag}
+docker image prune -f'''
+                }
+            }		
+	    stage('通过Publish Over Ssh通知目标服务器') {
+            steps {
+                sshPublisher(publishers: [sshPublisherDesc(configName: 'test', transfers: [sshTransfer(cleanRemote: false, excludes: '', execCommand: "deploy.sh $harbor_addr $harbor_repo $JOB_NAME $tag $container_port $host_port", execTimeout: 120000, flatten: false, makeEmptyDirs: false, noDefaultExcludes: false, patternSeparator: '[, ]+', remoteDirectory: '', remoteDirectorySDF: false, removePrefix: '', sourceFiles: '')], usePromotionTimestamp: false, useWorkspaceInPromotion: false, verbose: true)])
+               }
+           }				
+        }
+    post {
+        success{
+            dingtalk(
+                robot: 'jenkins-DingDing',
+                type:'MARKDOWN',
+                title: "success: ${JOB_NAME}",
+                text: ['# 测试任务成功 ${JOB_NAME}','消息正文：测试 ${JOB_NAME}项目类型的消息','','---',"- 构建成功:${JOB_NAME}项目!\n- 版本:${tag}\n- 持续时间:${currentBuild.durationString}\n- 任务:${JOB_NAME}"],
+                at: ['15301315006','17701331901']
+            )
+        }
+        failure{
+            dingtalk(
+                robot: 'jenkins-DingDing',
+                type:'MARKDOWN',
+                title: "fail: ${JOB_NAME}",
+                text: ['# 测试任务失败 ${JOB_NAME}','消息正文：测试 ${JOB_NAME}项目类型的消息','','---',"- 构建失败:${JOB_NAME}项目!\n- 版本:${tag}\n- 持续时间:${currentBuild.durationString}\n- 任务:${JOB_NAME}"],
+                at: ['15301315006','17701331901']
+            )
+        }
+        unstable{
+            dingtalk(
+                robot: 'jenkins-DingDing',
+                type:'MARKDOWN',
+                title: "unstable: ${JOB_NAME}",
+                text: ['# 测试任务不稳定 ${JOB_NAME}','消息正文：测试 ${JOB_NAME}项目类型的消息','','---',"- 构建不稳定:${JOB_NAME}项目!\n- 版本:${tag}\n- 持续时间:${currentBuild.durationString}\n- 任务:${JOB_NAME}"],
+                at: ['15301315006','17701331901']
+            )
+        }
+    }
+}
